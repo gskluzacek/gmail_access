@@ -45,6 +45,7 @@ class ParseFormat2:
         :type receipt_email: ReceiptEmail
         """
         self.receipt_email = receipt_email
+        self.receipt_email.soup = self.soup
 
         try:
             date_str = self.get_field_value_2(r"date")
@@ -56,7 +57,10 @@ class ParseFormat2:
         # get the order id, document number and apple id account
         self.receipt_email.order_id = self.get_field_value_2(r"order id")
         self.receipt_email.doc_nbr = self.get_field_value_1(r"document no")
-        self.receipt_email.apple_account = self.get_field_value_1(r"apple[\s\u00A0]account")
+        apple_account = self.get_field_value_1(r"apple[\s\u00A0]account")
+        if not apple_account:
+            apple_account = self.get_field_value_1(r"apple id")
+        self.receipt_email.apple_account = apple_account
 
         # process the items from each section of the emailed receipt
         for section in self.sections:
@@ -65,7 +69,7 @@ class ParseFormat2:
         # get the receipt subtotal, receipt tax and receipt Grand total
         self.receipt_email.subtotal = self.get_field_value_3(r"subtotal")
         self.receipt_email.tax = self.get_field_value_3(r"tax")
-        self.receipt_email.total = self.get_field_value_4(r"total")
+        self.receipt_email.total = self.get_field_value_4(r"\btotal")
 
     def get_field_value_1(self, field_text: str) -> str:
         """Get the string value for the corresponding `field_text`.
@@ -106,7 +110,11 @@ class ParseFormat2:
         """
         span_tag = self.soup.find('span', string=re.compile(rf'{field_text}', re.IGNORECASE))
         if span_tag:
-            return span_tag.parent.find_all("span")[1].text.strip()
+            all_span_tags = span_tag.parent.find_all("span")
+            if len(all_span_tags) < 2:
+                return span_tag.parent.get_text(separator="|", strip=True).split("|")[1]
+            else:
+                return span_tag.parent.find_all("span")[1].text.strip()
         return ""
 
     def get_field_value_3(self, field_text: str) -> Decimal:
@@ -173,8 +181,11 @@ class ParseFormat2:
         cells = row.find_all('td')
 
         item_category = self.category_map[section_name]
+
         descriptions = cells[1].get_text(separator="|", strip=True).split("|")  # noqa
-        descriptions = descriptions[:-1] if descriptions[-1].lower() == "report a problem" else descriptions
+        descriptions = [desc for desc in descriptions if desc.lower() not in ("report a problem", "write a review") and desc]
+        # descriptions = descriptions[:-1] if descriptions[-1].lower() == "report a problem" else descriptions
+
         purchase_amount = cells[2].table.tr.td.span.text.strip()
         purchase_amount = purchase_amount[1:] if purchase_amount.startswith("$") else purchase_amount
         purchase_amount = Decimal(purchase_amount or "0.00")
@@ -199,7 +210,7 @@ class ParseFormat2:
         :return: None
         :rtype: NoneType
         """
-        span_tag = self.soup.find('span', string=re.compile(rf'{section_name}', re.IGNORECASE))
+        span_tag = self.soup.find('span', string=re.compile(rf'^{section_name}$', re.IGNORECASE))
         if span_tag:
             section = span_tag.parent.parent.parent
             rows = section.find_all('tr')

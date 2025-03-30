@@ -59,6 +59,7 @@ class ParseFormat1:
         :type receipt_email: ReceiptEmail
         """
         self.receipt_email = receipt_email
+        self.receipt_email.soup = self.soup
 
         sections = self.get_sections()
         self.process_section_1(sections[0])

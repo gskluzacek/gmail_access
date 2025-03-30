@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Self
 
+from bs4 import BeautifulSoup, formatter
+
 from item import Item
 from receipt_email import ReceiptEmail
 
@@ -34,13 +36,14 @@ class Receipt:
     :ivar card: The payment card used for the transaction, if any.
     :type card: str | None
     :ivar file_path: The file path used to store the receipt information, if applicable.
-    :type file_path: str
+    :type file_path: str | None
     :ivar items: A list of purchased items associated with the receipt.
     :type items: list[Item]
     """
     tax_rate: Decimal = Decimal("0.08")
 
     def __init__(self,
+        soup: BeautifulSoup,
         receipt_date: date,
         order_id: str,
         doc_nbr: str,
@@ -49,9 +52,7 @@ class Receipt:
         tax: Decimal,
         card: str | None,
         total: Decimal,
-        file_path: str,
         items: list[Item] | None = None,
-        save_file: bool = False,
     ):
         """Create a new Receipt object.
 
@@ -78,17 +79,12 @@ class Receipt:
         :param total: The total amount after tax (if applicable).
         :type total: decimal.Decimal
         :param file_path: The file path to save the receipt details.
-        :type file_path: str
+        :type file_path: str | None
         :param items: List of `Item` objects representing the purchased items.
             if None is passed, then the list of items is initialized to an empty list.
         :type items: list[Item] | None
-        :param save_file: Whether to save the receipt content to a file.
-        :type save_file: bool
         """
-        if save_file:
-            # TODO: write code to save html content to a file
-            pass
-
+        self.soup = soup
         self.receipt_date = receipt_date
         self.order_id = order_id
         self.doc_nbr = doc_nbr
@@ -96,8 +92,8 @@ class Receipt:
         self.subtotal = subtotal
         self.tax = tax
         self.total = total
-        self.card = card
-        self.file_path = file_path
+        self.card = card.replace("\u00A0", " ") if card else None
+        self.file_path = None
         self.items: list[Item] = items or []
         if self.items:
             self.apply_tax_to_items()
@@ -119,6 +115,7 @@ class Receipt:
         :rtype: Self
         """
         receipt = Receipt(
+            soup=receipt_email_dto.soup,
             receipt_date=receipt_email_dto.receipt_date,
             order_id=receipt_email_dto.order_id,
             doc_nbr=receipt_email_dto.doc_nbr,
@@ -127,7 +124,6 @@ class Receipt:
             tax=receipt_email_dto.tax,
             card=receipt_email_dto.card,
             total=receipt_email_dto.total,
-            file_path="",
         )
         for item_email_dto in receipt_email_dto.items:
             receipt.add_item(Item.from_item_email(item_email_dto))
@@ -155,45 +151,115 @@ class Receipt:
         # apply tax to each item purchased and then sum up the tax calculated for all individual items
         items_tax_calc = [item.apply_tax(self.tax_rate) for item in self.items]
         total_tax_calc = sum(items_tax_calc)
-        tax_adj = self.tax - total_tax_calc
 
-        if tax_adj:
-            # get the index of the first item with a non-zero tax amount, if all items have a zero tax amount,
-            # None is returned
+        # if self.tax is non-zero but none of the items were marked as taxable, then check if a single item accounts for the entire tax amount
+        if self.tax != Decimal("0.00") and total_tax_calc == Decimal("0.00"):
+            items_tax_calc_ovrd = [item.calc_tax(self.tax_rate) for item in self.items]
+            appy_tax_to_accountable_item_index = next((i for i, tax_amt in enumerate(items_tax_calc_ovrd) if tax_amt == self.tax), None)
+            if appy_tax_to_accountable_item_index is None:
+                raise ValueError(f"The receipt has tax amount of: {self.tax}, however none of the items are marked as taxable. Additionally, no one item accounts for the entire tax amount")
+            item = self.items[appy_tax_to_accountable_item_index]
+            print(f"applying tax amount of: ${self.tax} to item: {item.description_1} for receipt: {self.order_id}")
+            self.items[appy_tax_to_accountable_item_index].adjust_tax(self.tax)
 
-            # implementation notes:
-            #   1) we use a generator function to yield each value on demand
-            #   2) the value of i is only yielded if item_tax_amt is non-zero
-            #   3) next() stops as soon as it retrieves the first value from the generator expression
-            #   4) if no values satisfy the condition of the generator function, next() will return the default value
-            #      of None
-            apply_adj_to_index = next((i for i, item_tax_amt in enumerate(items_tax_calc) if item_tax_amt), None)
+        else:
+            tax_adj = self.tax - total_tax_calc
+            if tax_adj:
+                # get the index of the first item with a non-zero tax amount, if all items have a zero tax amount,
+                # None is returned
 
-            # make sure that we found a taxable item to apply the tax adjustment to, else raise an exception
-            if apply_adj_to_index is None:
-                raise ValueError(
-                    f"Error in apply tax to items. After applying tax to each taxable item, a tax adjustment of "
-                    f"{tax_adj} was required due to rounding. Tax on receipt: {self.tax}, total tax calculated: "
-                    f"{total_tax_calc}. However the tax calculated for all items was less than +0.00! So we could "
-                    f"not determine which item to apply the tax adjustment to. Individual tax amounts calculated: "
-                    f"{", ".join(str(items_tax_calc))}."
-                )
+                # implementation notes:
+                #   1) we use a generator function to yield each value on demand
+                #   2) the value of i is only yielded if item_tax_amt is non-zero
+                #   3) next() stops as soon as it retrieves the first value from the generator expression
+                #   4) if no values satisfy the condition of the generator function, next() will return the default value
+                #      of None
+                apply_adj_to_index = next((i for i, item_tax_amt in enumerate(items_tax_calc) if item_tax_amt), None)
 
-            # if the tax adjustment exceeds the threshold of $0.04, validate that the number of items on the
-            # receipt is one, else raise an exception
-            if abs(tax_adj) > Decimal("0.04"):
-                number_of_taxable_items = sum(1 for item_tax_amt in items_tax_calc if item_tax_amt)
-                if number_of_taxable_items > 1:
+                if apply_adj_to_index is None:
                     raise ValueError(
-                        f"A significant tax adjustment of {tax_adj} is required which usually indicates that only part"
-                        f"of the purchase amount of an item is taxable or that the item type is only sometimes taxable."
-                        f"Additionally, the number of taxable items on the receipt: {number_of_taxable_items}, is "
-                        f"greater than one. As such, it cannot be determined which item to apply the tax adjustment to."
+                        f"Error in apply tax to items. After applying tax to each taxable item, a tax adjustment of "
+                        f"${tax_adj} was required due to rounding. Tax on receipt: ${self.tax}, total tax calculated: "
+                        f"${total_tax_calc}. However the tax calculated for all items was less than +0.00! So we could "
+                        f"not determine which item to apply the tax adjustment to. Individual tax amounts calculated: "
+                        f"{", ".join([str(tax) for tax in items_tax_calc])}."
                     )
-                item = self.items[apply_adj_to_index]
-                print(f"got a tax adjustment of: {tax_adj} on item: {item.description_1} for receipt: {self.order_id}")
 
-            self.items[apply_adj_to_index].adjust_tax(tax_adj)
-
+                # if the tax adjustment exceeds the threshold of $0.04, validate that the number of items on the
+                # receipt is one, else raise an exception
+                if abs(tax_adj) > Decimal("0.04"):
+                    number_of_taxable_items = sum(1 for item_tax_amt in items_tax_calc if item_tax_amt)
+                    if number_of_taxable_items > 1:
+                        raise ValueError(
+                            f"A significant tax adjustment of ${tax_adj} is required which usually indicates that only part"
+                            f"of the purchase amount of an item is taxable or that the item type is only sometimes taxable."
+                            f"Additionally, the number of taxable items on the receipt: {number_of_taxable_items}, is "
+                            f"greater than one. As such, it cannot be determined which item to apply the tax adjustment to."
+                        )
+                    item = self.items[apply_adj_to_index]
+                    print(f"Applied a significant tax adjustment of: ${tax_adj} to item: > {item.description_1} < for receipt: {self.order_id}")
+                self.items[apply_adj_to_index].adjust_tax(tax_adj)
         # set subtotal if it is 0.00
         self.subtotal = self.subtotal or self.total - self.tax
+
+    def save(self, dir_path: str) -> None:
+        receipt_file_path = f"{dir_path}/{self.order_id}_{self.receipt_date.strftime("%Y-%m-%d")}.html"
+        pretty_html = self.soup.prettify(formatter=formatter.HTMLFormatter(indent=4))
+        with open(receipt_file_path, 'w') as f:
+            f.write(pretty_html)
+        self.file_path = receipt_file_path
+
+    def exists(self, conn):
+        curs = conn.cursor()
+        sql = """
+            select hdr_id from order_header where order_id = :order_id;
+        """
+        curs.execute(sql, {"order_id": self.order_id})
+        row = curs.fetchone()
+        if row:
+            hdr_id = row.hdr_id
+        else:
+            hdr_id = None
+        curs.close()
+        return hdr_id
+
+    def insert(self, conn):
+        curs = conn.cursor()
+        sql = """
+            insert into order_header (
+                receipt_date, 
+                order_id, 
+                doc_nbr, 
+                apple_account, 
+                subtotal, 
+                tax, 
+                total, 
+                card, 
+                file_path
+            ) values (
+                :receipt_date,
+                :order_id,
+                :doc_nbr,
+                :apple_account,
+                :subtotal, 
+                :tax,
+                :total,
+                :card,
+                :file_path
+            )
+        """
+        curs.execute(sql, {
+            "receipt_date": self.receipt_date,
+            "order_id": self.order_id,
+            "doc_nbr": self.doc_nbr,
+            "apple_account": self.apple_account,
+            "subtotal": float(self.subtotal),
+            "tax": float(self.tax),
+            "total": float(self.total),
+            "card": self.card,
+            "file_path": self.file_path,
+        })
+        hdr_id = curs.lastrowid
+        for item in self.items:
+            item.insert(curs, hdr_id)
+        conn.commit()

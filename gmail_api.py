@@ -10,25 +10,57 @@ def init_gmail_service(client_file, api_name="gmail", api_version="v1", scopes=[
     return create_service(client_file, api_name, api_version, scopes)
 
 def _extract_body(payload):
-    body = "<Text boby not available>"
-    body_type = "plain_text"
+    body = "<Text body not available>"
+    body_type = "<unknown>"
     if "parts" in payload:
         for part in payload["parts"]:
+            # the intent of this code seems like there could be sub-parts in a given part ??? I cant see that being correct
             if part["mimeType"] == "multipart/alternative":
                 for subpart in part["parts"]:
                     if subpart["mimeType"] == "text/plain" and "data" in subpart["body"]:
                         body = base64.urlsafe_b64decode(subpart["body"]["data"]).decode("utf-8")
+                        body_type = "plain_text"
                         break
-            elif part["mimeType"] == "text/plain" and "data" in part["body"]:
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-                break
+                    # TODO: should we add a check for mimeType == "text/html" and give it priority over plain text ????
+            # prefer html over plain text
             elif part["mimeType"] == "text/html" and "data" in part["body"]:
                 body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
                 body_type = "html"
                 break
+            elif part["mimeType"] == "text/plain" and "data" in part["body"]:
+                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
+                body_type = "plain_text"
+                break
     elif "body" in payload and "data" in payload["body"]:
+        body_type = "plain_text"
         body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8")
+    # TODO: not sure if there could be a case where body is in payload and payload["body"] is not plain text ???? if yes, then is the top level header or mimeType set ????
     return body, body_type
+
+def _extract_body2(payload):
+    if payload["mimeType"] != "multipart/alternative":
+        raise ValueError(f"Unimplemented payload mime type: {payload['mimeType']}, you need to add more code...")
+
+    bodies = {
+        "unknown": "<Text body not available>",
+    }
+    for part in payload["parts"]:
+        body_type = part.get("mimeType")
+        if not body_type:
+            raise ValueError(f"missing mime type for part: {part}")
+        body = part.get("body")
+        if not body:
+            raise ValueError(f"missing data for part: {part}")
+        data = body.get("data")
+        if not data:
+            raise ValueError(f"missing data for part body: {body}")
+        bodies[body_type] = base64.urlsafe_b64decode(data).decode("utf-8")
+    if "text/html" in bodies:
+        return bodies["text/html"], "html"
+    elif "text/plain" in bodies:
+        return bodies["text/plain"], "plain_text"
+    else:
+        return bodies["unknown"], "unknown"
 
 def get_email_messages(service, user_id="me", label_ids=None, folder_name="INBOX", max_results=5):
     messages = []
@@ -80,7 +112,7 @@ def get_email_message_details(service, msg_id):
     star = message.get('labelIds', []).count('STARRED') > 0
     label = ', '.join(message.get('labelIds', []))
 
-    body, body_type = _extract_body(payload)
+    body, body_type = _extract_body2(payload)
 
     return {
         'subject': subject,

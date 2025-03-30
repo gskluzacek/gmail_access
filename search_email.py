@@ -21,7 +21,7 @@ def main():
     # to check for apple activity
     query = 'from:no_reply@email.apple.com subject:("Your receipt from Apple")'
 
-    email_messages = search_emails(service, query, max_results=200)
+    email_messages = search_emails(service, query, max_results=5)
     for message in email_messages:
         email_detail = get_email_message_details(service, message['id'])
         # print(message['id'])
@@ -51,16 +51,6 @@ def main():
             print("<< unknown body type >>")
         else:
             print('-' * 50)
-
-"""
-subjects:
-Your receipt from Apple.
-Your recent purchase with your Apple ID.
-Subscription Confirmation
-Your Subscription Confirmation
-Your Subscription is Expiring
-Your Subscription Price Increase
-"""
 
 
 if __name__ == '__main__':

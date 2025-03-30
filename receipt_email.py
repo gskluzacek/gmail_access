@@ -1,6 +1,8 @@
 from datetime import date
 from decimal import Decimal
 
+from bs4 import BeautifulSoup
+
 from item_email import ItemEmail
 
 
@@ -13,6 +15,8 @@ class ReceiptEmail:
 
     Unless otherwise noted, all instance variables are defaulted to None before parsing.
 
+    :ivar soup: beautiful soup object with the parsed html content.
+    :type soup: BeautifulSoup | None
     :ivar receipt_date: The date when the receipt was issued.
     :type receipt_date: date | None
     :ivar order_id: The unique identifier for the order.
@@ -39,6 +43,7 @@ class ReceiptEmail:
         to the constructor. Typically, the constructor will not be called directly, but rather
         called by the `receipt_email_factory` method.
         """
+        self.soup: BeautifulSoup | None = None
         self.receipt_date: date | None  = None
         self.order_id: str | None = None
         self.doc_nbr: str | None = None

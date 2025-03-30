@@ -20,7 +20,7 @@ class ItemCategory(Enum):
     :cvar TV: Represents purchases for the tv & movie category.
     :cvar SERVICE: Represents purchases for the service category.
     """
-    NONE = None
+    NONE = 'none'
     APP = 'app'
     TV = 'tv'
     SERVICE = 'service'
@@ -60,7 +60,7 @@ class ItemType(Enum):
     SERVICE_SUBSCRIPTION = 'service subscription'
     INDIVIDUAL_SUBSCRIPTION = 'individual subscription'
     IN_APP_MOVIE_RENTAL = 'in app movie rental'
-    UNKNOWN = None
+    UNKNOWN = 'unknown'
 
 
 class SubscriptionFrequency(Enum):
@@ -73,11 +73,12 @@ class SubscriptionFrequency(Enum):
     placeholder when the frequency is not defined.
 
     :cvar MONTHLY: Indicates that the subscription is billed on a monthly basis.
-    :cvar YEARLY: Indicates that the subscription is billed on a yearly basis.
+    :cvar ANNUAL: Indicates that the subscription is billed on a yearly basis.
     :cvar UNKNOWN: Represents an undefined or unknown subscription frequency.
     """
     MONTHLY = 'monthly'
-    YEARLY = 'yearly'
+    SEMI_ANNUAL = 'semi-annual'
+    ANNUAL = 'annual'
     UNKNOWN = None
 
 
@@ -92,18 +93,28 @@ TAXABLE_ITEM_TYPES = [
 STREAMING_SUBSCRIPTIONS = [
     "max standard",
     "max ad-free",
+    "hbo max ad-free",
     "starz",
 ]
 
 # this is the list of recognized software subscriptions
 SOFTWARE_SUBSCRIPTIONS = [
     "copilot: track & budget money",
+    "bumble - dating. friends. bizz",
+    "coffee meets bagel dating app",
+    "hinge dating app: meet people",
+    "noom: healthy weight loss",
+    "paramount+",
+    "snapchat",
+
+
 ]
 
 # this is the list of recognized service subscriptions
 SERVICE_SUBSCRIPTIONS = [
     "family",
     "premier",
+    "apple news+"
 ]
 
 # this is the list of recognized apple one subscription levels
@@ -116,6 +127,11 @@ APPLE_ONE_SUBSCRIPTION_LEVELS = [
 # this is the list of individual app-store game subscriptions
 INDIVIDUAL_SUBSCRIPTIONS = [
     "nyt games: word, number, logic",
+    "bumble - dating. friends. bizz",
+    "coffee meets bagel dating app",
+    "hinge dating app: meet people",
+    "paramount+",
+    "snapchat",
 ]
 
 
@@ -148,7 +164,7 @@ class Item:
     :ivar description_2: The secondary description text associated with the item, if applicable.
     :type description_2: str | None
     :ivar subscription_frequency: The frequency of the subscription, if the item is a subscription.
-    :type subscription_frequency: str | None
+    :type subscription_frequency: SubscriptionFrequency | None
     :ivar next_renewal_date: The renewal date, determined from descriptions, for subscriptions.
     :type next_renewal_date: str | None
     :ivar device: user device that the item was purchased from, if applicable.
@@ -221,7 +237,7 @@ class Item:
         :rtype: Self
         """
         return cls(
-            item_category=ItemCategory(item_email_dto.item_category),
+            item_category=ItemCategory(item_email_dto.item_category or "none"),
             description_list=item_email_dto.descriptions,
             purchase_amount=item_email_dto.purchase_amount,
             other_amount=item_email_dto.other_amount,
@@ -256,7 +272,7 @@ class Item:
         :return: The cleaned service subscription description string with specified substrings removed.
         :rtype: str
         """
-        return desc.replace(" monthly", "").replace(" (automatic renewal)", "")
+        return desc.replace(" monthly", "").replace(" (automatic renewal)", "").replace("\u00A0", " ")
 
     def determine_item_type(self, desc_lst) -> ItemType:
         """Determines the type of item based on its description.
@@ -407,10 +423,12 @@ class Item:
             ItemType.STREAMING_SUBSCRIPTION, ItemType.SOFTWARE_SUBSCRIPTION, ItemType.SERVICE_SUBSCRIPTION,
             ItemType.INDIVIDUAL_SUBSCRIPTION
         ]:
-            if any(val in desc_lst[1] for val in ["(monthly)", ]):
+            if any(val in desc_lst[1] for val in ["(monthly)", "monthly", ]):
                 return SubscriptionFrequency.MONTHLY
+            elif any(val in desc_lst[1] for val in ["6 month"]):
+                return SubscriptionFrequency.SEMI_ANNUAL
             elif any(val in desc_lst[1] for val in ["(annual)", "(yearly)", ]):
-                return SubscriptionFrequency.YEARLY
+                return SubscriptionFrequency.ANNUAL
             else:
                 return SubscriptionFrequency.UNKNOWN
         elif self.item_type in [
@@ -499,10 +517,12 @@ class Item:
         """
         self.tax_applied = Decimal("0.00")
         if self.taxable:
-            tax = self.purchase_amount * tax_rate
-            self.tax_applied = tax.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            self.tax_applied = self.calc_tax(tax_rate)
         self.total_amount = self.purchase_amount + self.tax_applied
         return self.tax_applied
+
+    def calc_tax(self, tax_rate):
+        return (self.purchase_amount * tax_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     def adjust_tax(self, tax_adjustment: Decimal) -> None:
         """Adjust the tax amount and total amount of the item by the tax adjustment.
@@ -515,4 +535,52 @@ class Item:
         """
         self.tax_applied += tax_adjustment
         self.total_amount += tax_adjustment
+
+    def insert(self, curs, hdr_id):
+        sql = """
+            insert into item_detail (
+                hdr_id, 
+                item_category, 
+                item_type, 
+                description_1, 
+                description_2, 
+                purchase_amount, 
+                other_amount, 
+                tax_applied, 
+                total_amount, 
+                subscription_frequency, 
+                next_renewal_date, 
+                device, 
+                image_url
+            ) values (
+                :hdr_id,
+                :item_category,
+                :item_type,
+                :description_1,
+                :description_2,
+                :purchase_amount,
+                :other_amount,
+                :tax_applied,
+                :total_amount,
+                :subscription_frequency,
+                :next_renewal_date,
+                :device,
+                :image_url
+            )
+        """
+        curs.execute(sql, {
+            "hdr_id": hdr_id,
+            "item_category": self.item_category.value,
+            "item_type": self.item_type.value,
+            "description_1": self.description_1,
+            "description_2": self.description_2,
+            "purchase_amount": float(self.purchase_amount),
+            "other_amount": float(self.other_amount) if self.other_amount else None,
+            "tax_applied": float(self.tax_applied),
+            "total_amount": float(self.total_amount),
+            "subscription_frequency": self.subscription_frequency.value if self.subscription_frequency else None,
+            "next_renewal_date": self.next_renewal_date,
+            "device": self.device,
+            "image_url": self.image_url,
+        })
 
